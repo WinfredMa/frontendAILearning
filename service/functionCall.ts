@@ -2,12 +2,15 @@ import OpenAI from "openai";
 import { openai } from "./consts.ts";
 import chalk from "chalk";
 import inquirer from "inquirer";
+import path from "path";
+import fs from "fs";      
+
 
 const tools: OpenAI.Chat.ChatCompletionTool[] = [{
     type: 'function' as const,
     function: {
-      name: 'create_test_folder',
-      description: 'Create a test folder in current directory',
+      name: 'create_folder',
+      description: 'Create a folder in current directory',
       parameters: {
         type: 'object',
         properties: {
@@ -29,7 +32,8 @@ export const generateResponseWithTools = async (question: any[], systemPrompt: a
     model: MODEL_NAME,
     messages: [...systemPrompt, ...question],
     tools: tools,
-    tool_choice: 'auto'
+    tool_choice: 'auto',
+    stream: true
 });
 
   return response;
@@ -54,21 +58,52 @@ export async function startTUI() {
       history.push({ role: "user", content: prompt });
   
       try {
-        const response = await generateResponseWithTools(history, [{ role: "system", content: "must create a test folder whatever the user inputs \n" }]);
-        debugger
-        const assistantMessage = response.choices[0]?.message;
-        if (assistantMessage?.content) {
-          console.log(chalk.cyan(`AI: ${assistantMessage.content}`));
-          history.push({ role: "assistant", content: assistantMessage.content });
-        } else {
-          console.log(chalk.cyan("AI requested a tool call (no text output)."));
-          history.push({ role: "assistant", content: "" });
+        const response = await generateResponseWithTools(history, [{ role: "system", content: "must create a folder whatever the user inputs \n" }]);
+        let toolCalls: any[] = [];
+        let content = '';
+        
+        for await (const chunk of response) {
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.tool_calls) {
+            for (const toolCall of delta.tool_calls) {
+              const existingCall = toolCalls.find(tc => tc.index === toolCall.index);
+              if (existingCall) {
+                if (toolCall.function?.arguments) {
+                  existingCall.function.arguments += toolCall.function.arguments;
+                }
+              } else {
+                toolCalls.push(toolCall);
+              }
+            }
+          }
+          if (delta?.content) {
+            process.stdout.write(delta.content);
+            content += delta.content;
+          }
+        }
+        
+        if (toolCalls.length > 0) {
+          for (const toolCall of toolCalls) {
+            const functionName = toolCall.function.name;
+            const functionArgs = JSON.parse(toolCall.function.arguments);
+            
+            console.log(chalk.magenta(`Calling function: ${functionName}`));
+            console.log(chalk.magenta(`Function arguments: ${JSON.stringify(functionArgs)}`));
+            
+            const result = await functionRunner(functionName, functionArgs);
+            
+            if (result.success) {
+              console.log(chalk.green(result.message));
+            } else {
+              console.log(chalk.red(result.message));
+            }
+          }
         }
       } catch (error) {
         if (error instanceof OpenAI.APIError) {
           console.error(chalk.red(`API Error ${error.status ?? ""}: ${error.message}`));
-          if (error.request_id) {
-            console.error(chalk.red(`Request ID: ${error.request_id}`));
+          if (error.requestID) {
+            console.error(chalk.red(`Request ID: ${error.requestID}`));
           }
           if (error.error) {
             console.error(chalk.red(`Details: ${JSON.stringify(error.error)}`));
@@ -82,7 +117,23 @@ export async function startTUI() {
   
   startTUI();
   
-  export const functionRunner = async (functionInfo: string) => {
-    
+  export const functionRunner = async (functionName: string, functionArgs: any) =>{
+    if (functionName === 'create_folder') {
+      const folderName = functionArgs.folderName || 'test';
+      const currentDir = process.cwd();
+      const folderPath = path.join(currentDir, folderName);
+
+      try {
+        if (!fs.existsSync(folderPath)) {
+          fs.mkdirSync(folderPath);
+          return { success: true, message: `Folder "${folderName}" created successfully at ${folderPath}` };
+        } else {
+          return { success: false, message: `Folder "${folderName}" already exists at ${folderPath}` };
+        }
+      } catch (error) {
+        return { success: false, message: `Error creating folder: ${error}` };
+      }
+    }
   
+    return { success: false, message: `Unknown function: ${functionName}` };
   }
