@@ -7,7 +7,7 @@ import fs from "fs";
 
 
 const tools: OpenAI.Chat.ChatCompletionTool[] = [{
-    type: 'function' as const,
+    type: 'function',
     function: {
       name: 'create_folder',
       description: 'Create a folder in current directory',
